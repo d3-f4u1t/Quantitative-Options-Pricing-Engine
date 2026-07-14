@@ -215,6 +215,6 @@ if __name__ == "__main__":
     print(f"Vega: {greeks['Vega']:.4f} (Option gains $ {greeks['Vega']:.2f} for every 1% change in volatility)")
 
 
-
+#
     print("Rendering charts...")
     plot_paths(anti_paths, euro_option.strike, num_paths=100)
