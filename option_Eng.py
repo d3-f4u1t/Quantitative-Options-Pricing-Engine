@@ -29,7 +29,6 @@ class MarketEnvironment:
         self.rate = risk_free_rate      # BASELINE INTEREST RATE
         self.vol = volatility           # HOW MUCH UP AND DOWN DOES A STOCK DO
 
-
 class OptionContract:
     """Base class for all options. Every option needs a strike and a time to maturity."""
     def __init__(self, strike_price, time_to_maturity):
@@ -39,7 +38,6 @@ class OptionContract:
     def calculate_payoff(self, price_paths):
         """Every specific option type will override this method with its own rules."""
         raise NotImplementedError("Payoff must be defined in the subclass.")
-
 
 class EuropeanCall(OptionContract):
     """European Options only care about the very last day."""
@@ -60,7 +58,6 @@ class EuropeanCall(OptionContract):
         call_price = market.spot * stats.norm.cdf(d1) - self.strike * math.exp(-market.rate * self.ttm) * stats.norm.cdf(d2)
         return call_price
 
-
 class AsianCall(OptionContract):
     """Asian Options care about the AVERAGE price over the whole timeline."""
     
@@ -70,7 +67,6 @@ class AsianCall(OptionContract):
         # cal payoff
         payoffs = np.maximum(average_prices - self.strike, 0)
         return payoffs
-
 
 class MonteCarloEngine:
     """
@@ -103,7 +99,6 @@ class MonteCarloEngine:
         price_paths = market.spot * np.cumprod(growth_factors, axis=1)
         return price_paths
     
-
     def price_option(self, market: MarketEnvironment, option: OptionContract, use_antithetic=True):
         """Prices ANY option contract passed into it."""
         #Generate dif factors/ universe
@@ -120,17 +115,15 @@ class MonteCarloEngine:
 
 class RiskManager:
     """
-    Cals the Greak usingh finite dif methode (bump and revalue)
+    Cals the Greak using finite dif methode (bump and revalue)
     tells how much risk they have if the market moves
     """
-
     def __init__(self, engine: MonteCarloEngine):
         self.engine = engine
 
     def calculate_greeks(self, market: MarketEnvironment, option: OptionContract):
         #delta(sens to stock price)
-        #bump is if the stock price goes upor down by just 1%
-
+        #bump is if the stock price goes up or down by just 1%
         bump_amt = market.spot * 0.01
         
         market_up = MarketEnvironment(market.spot + bump_amt, market.rate, market.vol)
@@ -139,7 +132,7 @@ class RiskManager:
         price_up, _ = self.engine.price_option(market_up, option, use_antithetic=True)
         price_down, _ = self.engine.price_option(market_down, option, use_antithetic=True)
 
-        # delta = rise / run (change in price/ change in stock)
+        # delta = rise / run (change in price / change in stock)
         delta = (price_up - price_down) / (2 * bump_amt)
 
         #vega sens to volatility
@@ -152,11 +145,10 @@ class RiskManager:
         price_vol_up, _ = self.engine.price_option(market_vol_up, option, use_antithetic=True)
         price_vol_down, _ = self.engine.price_option(market_vol_down, option, use_antithetic=True)
 
-        # vega = rise / run (change in price/ change in volatility)
+        # vega = rise / run (change in price / change in volatility)
         vega = (price_vol_up - price_vol_down) / (2 * vol_bump) * 0.01
 
         return { "Delta":  delta, "Vega": vega}
-
 
 class Portfolio:
     """Aggregates multiple options and manages risk."""
@@ -178,6 +170,38 @@ class Portfolio:
                 val += price
             prices.append(val)
         return np.percentile(prices, (1 - confidence) * 100)
+        
+    def stress_test(self, spot_shock_pct, vol_shock_pct):
+        """
+        Simulates a market crash.
+        spot_shock_pct: e.g., -0.20 for a 20% market crash.
+        vol_shock_pct: e.g., 0.50 for a 50% spike in volatility (panic).
+        """
+        print(f"\n[!!!] INITIATING STRESS TEST: Spot {spot_shock_pct*100}%, Volatility +{vol_shock_pct*100}% [!!!]")
+        
+        # 1. Calculate the "Normal" Portfolio Value
+        normal_value = 0
+        for c in self.contracts:
+            price, _ = self.engine.price_option(self.market, c, use_antithetic=True)
+            normal_value += price
+
+        # 2. Create the "Doomsday" Market
+        crashed_spot = self.market.spot * (1 + spot_shock_pct)
+        panicked_vol = self.market.vol * (1 + vol_shock_pct)
+        doomsday_market = MarketEnvironment(crashed_spot, self.market.rate, panicked_vol)
+
+        # 3. Calculate the "Doomsday" Portfolio Value
+        crashed_value = 0
+        for c in self.contracts:
+            price, _ = self.engine.price_option(doomsday_market, c, use_antithetic=True)
+            crashed_value += price
+
+        # 4. Calculate the Damage
+        pnl = crashed_value - normal_value
+        print(f"Normal Portfolio Value:   ${normal_value:.2f}")
+        print(f"Doomsday Portfolio Value: ${crashed_value:.2f}")
+        print(f"TOTAL LOSS (PnL):         ${pnl:.2f}\n")
+        return pnl
 
 def run_live_dashboard(market, engine, contract):
     """Animates the Delta risk in real-time."""
@@ -219,13 +243,18 @@ def plot_paths(paths, strike, num_paths=100):
     plt.ylabel("Stock Price ($)")
     plt.legend()
     plt.grid(True, alpha=0.3)
-    plt.show()
-
+    
+    #Draw the plot but DO NOT freeze the script
+    plt.show(block=False)
+    plt.pause(0.1)
 
 if __name__ == "__main__":
+    # Turn on Matplotlib's interactive mode so animations can run smoothly
+    plt.ion()
+    
     print("-- ENTERPRISE PRICING ENGINE --\n")
 
-    #Fetch real data for a stock
+    # Fetch real data for a stock
     ticker = "AAPL"
     try:
         spot, vol = get_market_data(ticker)
@@ -243,11 +272,11 @@ if __name__ == "__main__":
     my_portfolio = Portfolio(current_market, engine)
     my_portfolio.add_contract(euro_option)
 
-    #Ground Truth
+    # Ground Truth
     bs_price = euro_option.black_scholes_anly(current_market)
     print(f"Exact theo price (BS): ${bs_price:.4f}\n")
 
-    #Standard Engine Test
+    # Standard Engine Test
     print("Running Standard Engine...")
     start_time = time.time()
     std_price, _ = engine.price_option(current_market, euro_option, use_antithetic=False)
@@ -255,7 +284,7 @@ if __name__ == "__main__":
     std_error = abs(std_price - bs_price)
     print(f"Standard Price:   ${std_price:.4f} | Error: {std_error:.4f} | Time: {std_time:.4f}s\n")
 
-    # 4 Antithetic Engine
+    # Antithetic Engine
     print("Running Antithetic (Mirror) Engine...")
     start_time = time.time()
     anti_price, anti_paths = engine.price_option(current_market, euro_option, use_antithetic=True)
@@ -263,7 +292,7 @@ if __name__ == "__main__":
     anti_error = abs(anti_price - bs_price)
     print(f"Antithetic Price: ${anti_price:.4f} | Error: {anti_error:.4f} | Time: {anti_time:.4f}s\n")
 
-    # 5. Exotic Option Test
+    # Exotic Option Test
     print("Pricing Exotic Asian Option...")
     asian_price, _ = engine.price_option(current_market, asian_option, use_antithetic=True)
     print(f"Asian Option Price: ${asian_price:.4f} (Cheaper due to averaging!)\n")
@@ -272,8 +301,8 @@ if __name__ == "__main__":
     error_red = ((std_error - anti_error) / std_error) * 100 if std_error > 0 else 0
     print(f"Variance Reduction: Error reduced by {error_red:.1f}%!\n")
 
-    # Risk managment ( the greeks)
-    print("risk managment")
+    # Risk management (the greeks)
+    print("risk management")
     risk_desk = RiskManager(engine)
     greeks = risk_desk.calculate_greeks(current_market, euro_option)
     print(f"Delta: {greeks['Delta']:.4f} ( Option gains $ {greeks['Delta']:.2f} for every 1% change in stock price/it goes up )")
@@ -281,9 +310,14 @@ if __name__ == "__main__":
 
     # Portfolio VaR
     print(f"\nPortfolio VaR (95%): ${my_portfolio.calculate_var():.2f}")
+    
+    # Run the Stress Test (e.g., 1987 Black Monday scenario)
+    my_portfolio.stress_test(spot_shock_pct=-0.20, vol_shock_pct=0.50)
 
     print("Rendering charts...")
     plot_paths(anti_paths, euro_option.strike, num_paths=100)
 
     print("\nStarting Live Dashboard...")
+    # Turn OFF interactive mode right before the final loop so the animation window stays open
+    plt.ioff() 
     run_live_dashboard(current_market, engine, euro_option)
