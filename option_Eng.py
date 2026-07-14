@@ -3,6 +3,21 @@ import time
 import math
 import scipy.stats as stats
 import matplotlib.pyplot as plt
+import yfinance as yf
+from matplotlib.animation import FuncAnimation
+
+#Function to fetch real data
+def get_market_data(ticker_symbol):
+    """Fetches real price and calc volatility from Yahoo Finance."""
+    print(f"Fetching live data for {ticker_symbol}...")
+    stock = yf.Ticker(ticker_symbol)
+    hist = stock.history(period="1y")
+    spot = hist['Close'].iloc[-1]
+
+    # Calculate historical volatility (daily std dev * sqrt(252))
+    returns = hist['Close'].pct_change().dropna()
+    vol = returns.std() * np.sqrt(252)
+    return spot, vol
 
 class MarketEnvironment:
     """
@@ -89,8 +104,6 @@ class MonteCarloEngine:
         return price_paths
     
 
-
-
     def price_option(self, market: MarketEnvironment, option: OptionContract, use_antithetic=True):
         """Prices ANY option contract passed into it."""
         #Generate dif factors/ universe
@@ -111,7 +124,7 @@ class RiskManager:
     tells how much risk they have if the market moves
     """
 
-    def __init__(self, engin: MonteCarloEngine):
+    def __init__(self, engine: MonteCarloEngine):
         self.engine = engine
 
     def calculate_greeks(self, market: MarketEnvironment, option: OptionContract):
@@ -145,9 +158,54 @@ class RiskManager:
         return { "Delta":  delta, "Vega": vega}
 
 
+class Portfolio:
+    """Aggregates multiple options and manages risk."""
+    def __init__(self, market, engine):
+        self.market = market
+        self.engine = engine
+        self.contracts = []
 
-        #
+    def add_contract(self, contract):
+        self.contracts.append(contract)
 
+    def calculate_var(self, confidence=0.95):
+        """Value at Risk: The potential loss in a worst-case market event."""
+        prices = []
+        for _ in range(50): # Monte Carlo simulation of portfolio outcome
+            val = 0
+            for c in self.contracts:
+                price, _ = self.engine.price_option(self.market, c, use_antithetic=False)
+                val += price
+            prices.append(val)
+        return np.percentile(prices, (1 - confidence) * 100)
+
+def run_live_dashboard(market, engine, contract):
+    """Animates the Delta risk in real-time."""
+    fig, ax = plt.subplots(figsize=(10, 5))
+    delta_history = []
+
+    def update(frame):
+        # Simulate "Live Market Movement"
+        market.spot += np.random.normal(0, 0.5)
+        
+        # Bump and Revalue for Delta
+        bump = 0.01
+        m_up = MarketEnvironment(market.spot + bump, market.rate, market.vol)
+        m_down = MarketEnvironment(market.spot - bump, market.rate, market.vol)
+        p_up, _ = engine.price_option(m_up, contract, use_antithetic=False)
+        p_down, _ = engine.price_option(m_down, contract, use_antithetic=False)
+        delta = (p_up - p_down) / (2 * bump)
+        
+        delta_history.append(delta)
+        if len(delta_history) > 50: delta_history.pop(0)
+        
+        ax.clear()
+        ax.plot(delta_history, color='blue', label="Real-time Delta")
+        ax.set_title(f"Live Risk Monitor | Spot: ${market.spot:.2f} | Delta: {delta:.4f}")
+        ax.set_ylim(0, 1)
+
+    ani = FuncAnimation(fig, update, interval=200, cache_frame_data=False)
+    plt.show()
 
 def plot_paths(paths, strike, num_paths=100):
     plt.figure(figsize=(12, 6))
@@ -167,13 +225,23 @@ def plot_paths(paths, strike, num_paths=100):
 if __name__ == "__main__":
     print("-- ENTERPRISE PRICING ENGINE --\n")
 
-    # 1. Create objects
-    current_market = MarketEnvironment(spot_price=100.00, risk_free_rate=0.05, volatility=0.20)
+    #Fetch real data for a stock
+    ticker = "AAPL"
+    try:
+        spot, vol = get_market_data(ticker)
+        print(f"Data retrieved for {ticker}: Spot={spot:.2f}, Vol={vol:.2f}")
+    except:
+        print("Could not fetch data, using default values.")
+        spot, vol = 100.0, 0.20
+
+    current_market = MarketEnvironment(spot_price=spot, risk_free_rate=0.05, volatility=vol)
     
-    euro_option = EuropeanCall(strike_price=105.00, time_to_maturity=1.0)
-    asian_option = AsianCall(strike_price=105.00, time_to_maturity=1.0)
+    euro_option = EuropeanCall(strike_price=spot * 1.05, time_to_maturity=1.0)
+    asian_option = AsianCall(strike_price=spot * 1.05, time_to_maturity=1.0)
     
     engine = MonteCarloEngine(simulations=100_000, steps=252)
+    my_portfolio = Portfolio(current_market, engine)
+    my_portfolio.add_contract(euro_option)
 
     #Ground Truth
     bs_price = euro_option.black_scholes_anly(current_market)
@@ -205,16 +273,17 @@ if __name__ == "__main__":
     print(f"Variance Reduction: Error reduced by {error_red:.1f}%!\n")
 
     # Risk managment ( the greeks)
-
     print("risk managment")
-
     risk_desk = RiskManager(engine)
     greeks = risk_desk.calculate_greeks(current_market, euro_option)
-
     print(f"Delta: {greeks['Delta']:.4f} ( Option gains $ {greeks['Delta']:.2f} for every 1% change in stock price/it goes up )")
     print(f"Vega: {greeks['Vega']:.4f} (Option gains $ {greeks['Vega']:.2f} for every 1% change in volatility)")
 
+    # Portfolio VaR
+    print(f"\nPortfolio VaR (95%): ${my_portfolio.calculate_var():.2f}")
 
-#
     print("Rendering charts...")
     plot_paths(anti_paths, euro_option.strike, num_paths=100)
+
+    print("\nStarting Live Dashboard...")
+    run_live_dashboard(current_market, engine, euro_option)
