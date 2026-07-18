@@ -112,6 +112,63 @@ class MonteCarloEngine:
         discounted_payoff = math.exp(-market.rate * option.ttm) * average_payoff
         
         return discounted_payoff, paths
+    
+    def genrate_heston_path(self, market: MarketEnvironment, ttm, kappa, theta, xi, rho):
+        """
+        this sim both stock price and volitility changing over time,
+        as volatility depends on the prev day, we must step through time itrativly
+        """
+
+        dt = ttm/self.steps
+
+        #gen two grids of standrad normal random numbers
+        Z1 = np.random.standard_normal((self.sims, self.steps))
+        Z2 = np.random.standard_normal((self.sims, self.steps))
+
+        #correlated noice(w_s for stocks, w_v for vol)
+        W_S= Z1
+        W_V = rho * Z1 + math.sqrt(1 - rho**2) * Z2
+
+        #price and variance arrays
+
+        S = np.zeros((self.sims, self.steps + 1))
+        V = np.zeros((self.sims, self.steps + 1))
+
+        S[:,0] = market.spot
+        V[:,0] = market.vol ** 2 # variance is vol sqr
+
+        #using a loop as the next day voltility depends on the volatility of the privous day
+        for t in range(self.steps):
+            #using full truncation to prevent mathematical errors if variance dips below zero
+
+            v_t_plus = np.maximum(V[:, t], 0)
+
+            #eq 1 : volatility process(mean reverting)
+
+            dV = kappa * (theta - v_t_plus) * dt + xi * np.sqrt(v_t_plus * dt) * W_V[:, t]
+            V[:, t+1] = v_t_plus + dV
+
+            #eq2: Stock process
+
+            dS_log = (market.rate - 0.5 * v_t_plus) * dt + np.sqrt(v_t_plus * dt) * W_S[:, t]
+            S[:, t+1] = S[:, t] * np.exp(dS_log)
+
+        return S, V
+    
+    def price_heston_option(self, market: MarketEnvironment, option: OptionContract, kappa, theta, xi, rho):
+        """pricing the option using the heston stochastic vol model"""
+
+        paths, _ = self.genrate_heston_path(market, option.ttm, kappa , theta, xi ,rho)
+        payoffs = option.calculate_payoff(paths)
+
+        average_payoff =np.mean(payoffs)
+        discounted_payoff = math.exp(-market.rate * option.ttm) * average_payoff
+
+        return discounted_payoff, paths
+
+
+        
+                     
 
 class RiskManager:
     """
@@ -313,6 +370,24 @@ if __name__ == "__main__":
     
     # Run the Stress Test (e.g., 1987 Black Monday scenario)
     my_portfolio.stress_test(spot_shock_pct=-0.20, vol_shock_pct=0.50)
+
+
+    print("\n HESTON MODEL PRICING")
+    """here:
+    kappa: mean reversion speed( how fast volatility returns to normal)
+    theta: long term avg of variance
+    xi: (vol  of vol): how volatile is the volatilty itslef?
+    rho: correlation(-0.7 means when the market drops, vol spikes)
+    """
+    heston_price, heston_paths = engine.price_heston_option(
+        current_market, euro_option,
+        kappa = 2.0, theta = vol**2, xi= 0.2, rho = -0.7
+    )
+
+    print(f"Heston model price(Stochastic Vol): ${heston_price:.4f}")
+    print(f"Exact theo price (BS): ${bs_price:.4f}")
+
+
 
     print("Rendering charts...")
     plot_paths(anti_paths, euro_option.strike, num_paths=100)
