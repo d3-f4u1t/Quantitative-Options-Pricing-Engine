@@ -112,53 +112,49 @@ class MonteCarloEngine:
         discounted_payoff = math.exp(-market.rate * option.ttm) * average_payoff
         
         return discounted_payoff, paths
-    
-    def genrate_heston_path(self, market: MarketEnvironment, ttm, kappa, theta, xi, rho):
-        """
-        this sim both stock price and volitility changing over time,
-        as volatility depends on the prev day, we must step through time itrativly
-        """
 
-        dt = ttm/self.steps
-
-        #gen two grids of standrad normal random numbers
+    def generate_heston_paths(self, market: MarketEnvironment, ttm, kappa, theta, xi, rho):
+        """
+        PHASE 2: THE HESTON MODEL
+        Simulates both stock price AND volatility changing over time.
+        Because volatility depends on the previous day, we must step through time iteratively.
+        """
+        dt = ttm / self.steps
+        
+        # Generate two grids of standard normal random numbers
         Z1 = np.random.standard_normal((self.sims, self.steps))
         Z2 = np.random.standard_normal((self.sims, self.steps))
-
-        #correlated noice(w_s for stocks, w_v for vol)
-        W_S= Z1
+        
+        # Create correlated noise (W_S for stock, W_V for volatility)
+        W_S = Z1
         W_V = rho * Z1 + math.sqrt(1 - rho**2) * Z2
-
-        #price and variance arrays
-
+        
+        # Initialize price and variance arrays
         S = np.zeros((self.sims, self.steps + 1))
         V = np.zeros((self.sims, self.steps + 1))
-
-        S[:,0] = market.spot
-        V[:,0] = market.vol ** 2 # variance is vol sqr
-
-        #using a loop as the next day voltility depends on the volatility of the privous day
+        
+        S[:, 0] = market.spot
+        V[:, 0] = market.vol ** 2 # Initial variance is vol squared
+        
+        # We MUST use a loop here because tomorrow's volatility depends on today's volatility
         for t in range(self.steps):
-            #using full truncation to prevent mathematical errors if variance dips below zero
-
+            # We use "Full Truncation" to prevent mathematical errors if variance dips below zero
             v_t_plus = np.maximum(V[:, t], 0)
-
-            #eq 1 : volatility process(mean reverting)
-
+            
+            # Equation 1: Volatility Process (mean-reverting)
             dV = kappa * (theta - v_t_plus) * dt + xi * np.sqrt(v_t_plus * dt) * W_V[:, t]
             V[:, t+1] = v_t_plus + dV
-
-            #eq2: Stock process
-
+            
+            # Equation 2: Stock Process
             dS_log = (market.rate - 0.5 * v_t_plus) * dt + np.sqrt(v_t_plus * dt) * W_S[:, t]
             S[:, t+1] = S[:, t] * np.exp(dS_log)
-
+            
         return S, V
-    
+        
     def price_heston_option(self, market: MarketEnvironment, option: OptionContract, kappa, theta, xi, rho):
         """pricing the option using the heston stochastic vol model"""
 
-        paths, _ = self.genrate_heston_path(market, option.ttm, kappa , theta, xi ,rho)
+        paths, _ = self.generate_heston_paths(market, option.ttm, kappa , theta, xi ,rho)
         payoffs = option.calculate_payoff(paths)
 
         average_payoff =np.mean(payoffs)
@@ -166,9 +162,38 @@ class MonteCarloEngine:
 
         return discounted_payoff, paths
 
-
+    def generate_correlated_paths(self, spots, rates, vols, corr_matrix, ttm):
+        """
+        PHASE 3: MULTI-ASSET ENTANGLEMENT (Cholesky Decomposition)
+        Simulates multiple correlated assets simultaneously.
+        """
+        num_assets = len(spots)
+        dt = ttm / self.steps
         
-                     
+        # 1. Cholesky Decomposition: L * L^T = Correlation Matrix
+        # L is the "entanglement" matrix. It links the random noise together.
+        L = np.linalg.cholesky(corr_matrix)
+        
+        # We will hold paths for ALL assets. Shape: (Number of Assets, Universes, Days)
+        paths = np.zeros((num_assets, self.sims, self.steps + 1))
+        for i in range(num_assets):
+            paths[i, :, 0] = spots[i]
+            
+        # 2. Step through time
+        for t in range(self.steps):
+            # Generate un-correlated random noise for all assets
+            Z_uncorrelated = np.random.standard_normal((num_assets, self.sims))
+            
+            # 3. ENTANGLE THE NOISE using Matrix Multiplication (Dot Product)
+            # This mathematically forces the stocks to crash or rally together!
+            Z_correlated = L.dot(Z_uncorrelated)
+            
+            # 4. Apply the correlated physics to each asset
+            for i in range(num_assets):
+                dS_log = (rates[i] - 0.5 * vols[i]**2) * dt + vols[i] * math.sqrt(dt) * Z_correlated[i, :]
+                paths[i, :, t+1] = paths[i, :, t] * np.exp(dS_log)
+                
+        return paths
 
 class RiskManager:
     """
@@ -269,13 +294,10 @@ def run_live_dashboard(market, engine, contract):
         # Simulate "Live Market Movement"
         market.spot += np.random.normal(0, 0.5)
         
-        # Bump and Revalue for Delta
-        bump = 0.01
-        m_up = MarketEnvironment(market.spot + bump, market.rate, market.vol)
-        m_down = MarketEnvironment(market.spot - bump, market.rate, market.vol)
-        p_up, _ = engine.price_option(m_up, contract, use_antithetic=False)
-        p_down, _ = engine.price_option(m_down, contract, use_antithetic=False)
-        delta = (p_up - p_down) / (2 * bump)
+        # FIX: We use Black-Scholes for instant, smooth live Greeks 
+        # instead of Monte Carlo, preventing "Simulation Noise" from breaking the chart!
+        d1 = (math.log(market.spot / contract.strike) + (market.rate + 0.5 * market.vol ** 2) * contract.ttm) / (market.vol * math.sqrt(contract.ttm))
+        delta = stats.norm.cdf(d1)
         
         delta_history.append(delta)
         if len(delta_history) > 50: delta_history.pop(0)
@@ -289,21 +311,36 @@ def run_live_dashboard(market, engine, contract):
     plt.show()
 
 def plot_paths(paths, strike, num_paths=100):
-    plt.figure(figsize=(12, 6))
-    # plots the rows
-    plt.plot(paths[:num_paths].T, lw=1.5, alpha=0.5)
-    #red dashed line for target strick price
-    plt.axhline(y=strike, color="r", linestyle="--", linewidth=2, label=f"Strike Price: (${strike})")
+    fig, ax = plt.subplots(figsize=(12, 6))
+    ax.axhline(y=strike, color="r", linestyle="--", linewidth=2, label=f"Strike Price: (${strike})")
+    ax.set_title(f"Monte Carlo Simulation: {num_paths} Universes")
+    ax.set_xlabel("Trading days")
+    ax.set_ylabel("Stock Price ($)")
+    ax.legend()
+    ax.grid(True, alpha=0.3)
     
-    plt.title(f"Monte Carlo Simulation: {num_paths} Universes")
-    plt.xlabel("Trading days")
-    plt.ylabel("Stock Price ($)")
-    plt.legend()
-    plt.grid(True, alpha=0.3)
+    # Setup limits so the graph doesn't jump around while drawing
+    ax.set_xlim(0, paths.shape[1])
+    ax.set_ylim(np.min(paths[:num_paths]), np.max(paths[:num_paths]))
     
-    #Draw the plot but DO NOT freeze the script
+    # Create empty lines for each universe
+    lines = [ax.plot([], [], lw=1.5, alpha=0.5)[0] for _ in range(num_paths)]
+    
     plt.show(block=False)
-    plt.pause(0.1)
+    
+    # FIX: Animate the drawing, jumping 5 days per frame for a smooth time-lapse effect
+    for i in range(1, paths.shape[1], 5):
+        for j, line in enumerate(lines):
+            line.set_data(np.arange(i), paths[j, :i])
+        fig.canvas.draw()
+        fig.canvas.flush_events()
+        plt.pause(0.01)
+        
+    # Draw the final day to make sure it finishes exactly at the end
+    for j, line in enumerate(lines):
+        line.set_data(np.arange(paths.shape[1]), paths[j, :])
+    fig.canvas.draw()
+    fig.canvas.flush_events()
 
 if __name__ == "__main__":
     # Turn on Matplotlib's interactive mode so animations can run smoothly
@@ -371,8 +408,7 @@ if __name__ == "__main__":
     # Run the Stress Test (e.g., 1987 Black Monday scenario)
     my_portfolio.stress_test(spot_shock_pct=-0.20, vol_shock_pct=0.50)
 
-
-    print("\n HESTON MODEL PRICING")
+    print("\n--- PHASE 2: HESTON MODEL PRICING ---")
     """here:
     kappa: mean reversion speed( how fast volatility returns to normal)
     theta: long term avg of variance
@@ -383,14 +419,33 @@ if __name__ == "__main__":
         current_market, euro_option,
         kappa = 2.0, theta = vol**2, xi= 0.2, rho = -0.7
     )
-
     print(f"Heston model price(Stochastic Vol): ${heston_price:.4f}")
     print(f"Exact theo price (BS): ${bs_price:.4f}")
 
-
+    print("\n--- PHASE 3: MULTI-ASSET CORRELATION (CHOLESKY) ---")
+    # Let's pretend we have 2 tech stocks (AAPL and MSFT) that move together 80% of the time.
+    basket_spots = [150.0, 200.0]
+    basket_vols = [0.20, 0.25]
+    basket_rates = [0.05, 0.05]
+    
+    # Correlation Matrix (1.0 on the diagonal because a stock is 100% correlated with itself)
+    correlation_matrix = np.array([
+        [1.0, 0.8],
+        [0.8, 1.0]
+    ])
+    
+    multi_paths = engine.generate_correlated_paths(basket_spots, basket_rates, basket_vols, correlation_matrix, ttm=1.0)
+    print(f"Successfully generated {engine.sims} correlated universes for {len(basket_spots)} assets!")
+    
+    # Let's prove the math works by calculating the actual correlation of our simulated final prices!
+    final_prices_asset_A = multi_paths[0, :, -1]
+    final_prices_asset_B = multi_paths[1, :, -1]
+    empirical_corr = np.corrcoef(final_prices_asset_A, final_prices_asset_B)[0, 1]
+    print(f"Target Input Correlation:      0.8000")
+    print(f"Actual Simulated Correlation: {empirical_corr:.4f} (The Cholesky Math Works!)\n")
 
     print("Rendering charts...")
-    plot_paths(anti_paths, euro_option.strike, num_paths=100)
+    plot_paths(heston_paths, euro_option.strike, num_paths=100)
 
     print("\nStarting Live Dashboard...")
     # Turn OFF interactive mode right before the final loop so the animation window stays open
