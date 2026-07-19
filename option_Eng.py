@@ -358,10 +358,16 @@ def run_live_dashboard(market, engine, contract):
         line.set_data(range(len(delta_history)), delta_history)
         ax.set_xlim(0, len(delta_history) + 10) 
         
-        ax.set_title(f"Live Risk Monitor | Spot: ${market.spot:.2f} | Delta: {delta:.4f}")
+        # Milestone check: If it's the last frame, change the title to show it stopped
+        if frame == 199:
+            ax.set_title(f"[MARKET CLOSED] Final Spot: ${market.spot:.2f} | Final Delta: {delta:.4f}")
+        else:
+            ax.set_title(f"Live Risk Monitor | Spot: ${market.spot:.2f} | Delta: {delta:.4f}")
+            
         return line,
 
-    ani = FuncAnimation(fig, update, interval=100, blit=False, cache_frame_data=False)
+    # LIMIT ADDED HERE: frames=200, repeat=False
+    ani = FuncAnimation(fig, update, frames=200, interval=100, blit=False, cache_frame_data=False, repeat=False)
     plt.show()
 
 def plot_paths(paths, strike, num_paths=100):
