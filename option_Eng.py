@@ -6,7 +6,51 @@ import matplotlib.pyplot as plt
 import yfinance as yf
 from matplotlib.animation import FuncAnimation
 
-#Function to fetch real data
+# --- PHASE 3 UPDATED: BULK DATA HANDLER ---
+def get_bulk_market_data(ticker_list):
+    """Downloads an entire basket of stocks at once and returns Matrices."""
+    print(f"Fetching bulk data for {len(ticker_list)} tickers...")
+    
+    # yf.download returns a MultiIndex DataFrame when multiple tickers are passed
+    data = yf.download(ticker_list, period="1y", group_by='ticker', progress=False)
+    
+    spots = []
+    vols = []
+    returns_list = []
+    valid_names = []
+
+    for ticker in ticker_list:
+        try:
+            # Extract individual ticker data
+            ticker_data = data[ticker]
+            if ticker_data['Close'].isna().all():
+                continue
+                
+            # Drop NaN values and calculate returns
+            close_prices = ticker_data['Close'].dropna()
+            if len(close_prices) < 200: # Ensure enough data exists
+                continue
+                
+            returns = close_prices.pct_change().dropna()
+            
+            spots.append(close_prices.iloc[-1])
+            vols.append(returns.std() * np.sqrt(252))
+            returns_list.append(returns)
+            valid_names.append(ticker)
+        except Exception as e:
+            print(f"Skipping {ticker} due to error: {e}")
+
+    if not valid_names:
+        raise ValueError("No valid data retrieved for the provided tickers.")
+
+    # Align the returns to the same dates to compute correlation
+    import pandas as pd
+    returns_df = pd.concat(returns_list, axis=1, keys=valid_names).dropna()
+    
+    corr_matrix = returns_df.corr().values
+    
+    return np.array(spots), np.array(vols), corr_matrix, valid_names
+
 def get_market_data(ticker_symbol):
     """Fetches real price and calc volatility from Yahoo Finance."""
     print(f"Fetching live data for {ticker_symbol}...")
@@ -286,61 +330,66 @@ class Portfolio:
         return pnl
 
 def run_live_dashboard(market, engine, contract):
-    """Animates the Delta risk in real-time."""
+    """Animates the Delta risk in real-time with smooth updates."""
     fig, ax = plt.subplots(figsize=(10, 5))
     delta_history = []
+    line, = ax.plot([], [], color='blue', label="Real-time Delta")
+    ax.set_ylim(0, 1)
+    ax.set_title("Live Risk Monitor (Delta)")
+    ax.set_xlabel("Time Steps")
+    ax.set_ylabel("Delta")
+    ax.legend()
+
+    # Pre-calculate Black-Scholes Delta for a smooth, noise-free line
+    def get_bs_delta(spot):
+        d1 = (math.log(spot / contract.strike) + (market.rate + 0.5 * market.vol ** 2) * contract.ttm) / (market.vol * math.sqrt(contract.ttm))
+        return stats.norm.cdf(d1)
 
     def update(frame):
         # Simulate "Live Market Movement"
         market.spot += np.random.normal(0, 0.5)
         
-        # FIX: We use Black-Scholes for instant, smooth live Greeks 
-        # instead of Monte Carlo, preventing "Simulation Noise" from breaking the chart!
-        d1 = (math.log(market.spot / contract.strike) + (market.rate + 0.5 * market.vol ** 2) * contract.ttm) / (market.vol * math.sqrt(contract.ttm))
-        delta = stats.norm.cdf(d1)
+        # Black-Scholes Delta for a smooth, noise-free line
+        delta = get_bs_delta(market.spot)
         
         delta_history.append(delta)
-        if len(delta_history) > 50: delta_history.pop(0)
         
-        ax.clear()
-        ax.plot(delta_history, color='blue', label="Real-time Delta")
+        # Update the line data and X-axis limits
+        line.set_data(range(len(delta_history)), delta_history)
+        ax.set_xlim(0, len(delta_history) + 10) 
+        
         ax.set_title(f"Live Risk Monitor | Spot: ${market.spot:.2f} | Delta: {delta:.4f}")
-        ax.set_ylim(0, 1)
+        return line,
 
-    ani = FuncAnimation(fig, update, interval=200, cache_frame_data=False)
+    ani = FuncAnimation(fig, update, interval=100, blit=False, cache_frame_data=False)
     plt.show()
 
 def plot_paths(paths, strike, num_paths=100):
     fig, ax = plt.subplots(figsize=(12, 6))
-    ax.axhline(y=strike, color="r", linestyle="--", linewidth=2, label=f"Strike Price: (${strike})")
+    ax.set_xlim(0, paths.shape[1])
+    ax.set_ylim(np.min(paths[:num_paths]), np.max(paths[:num_paths]))
+    ax.axhline(y=strike, color="r", linestyle="--", label=f"Strike Price: (${strike})")
     ax.set_title(f"Monte Carlo Simulation: {num_paths} Universes")
     ax.set_xlabel("Trading days")
     ax.set_ylabel("Stock Price ($)")
     ax.legend()
     ax.grid(True, alpha=0.3)
     
-    # Setup limits so the graph doesn't jump around while drawing
-    ax.set_xlim(0, paths.shape[1])
-    ax.set_ylim(np.min(paths[:num_paths]), np.max(paths[:num_paths]))
-    
-    # Create empty lines for each universe
-    lines = [ax.plot([], [], lw=1.5, alpha=0.5)[0] for _ in range(num_paths)]
+    # Initialize lines for all paths
+    lines = [ax.plot([], [], lw=1, alpha=0.3)[0] for _ in range(num_paths)]
     
     plt.show(block=False)
     
-    # FIX: Animate the drawing, jumping 5 days per frame for a smooth time-lapse effect
-    for i in range(1, paths.shape[1], 5):
+    def animate(i):
         for j, line in enumerate(lines):
-            line.set_data(np.arange(i), paths[j, :i])
-        fig.canvas.draw()
-        fig.canvas.flush_events()
-        plt.pause(0.01)
-        
-    # Draw the final day to make sure it finishes exactly at the end
-    for j, line in enumerate(lines):
-        line.set_data(np.arange(paths.shape[1]), paths[j, :])
-    fig.canvas.draw()
-    fig.canvas.flush_events()
+            # Only draw up to the current day 'i'
+            line.set_data(range(i), paths[j, :i])
+        return lines
+
+    ani = FuncAnimation(fig, animate, frames=paths.shape[1], interval=20, blit=False, repeat=False)
+    
+    # Pause to let the animation play out before moving to the next window
+    plt.pause(paths.shape[1] * 0.02 + 1)
 
 if __name__ == "__main__":
     # Turn on Matplotlib's interactive mode so animations can run smoothly
@@ -423,28 +472,31 @@ if __name__ == "__main__":
     print(f"Exact theo price (BS): ${bs_price:.4f}")
 
     print("\n--- PHASE 3: MULTI-ASSET CORRELATION (CHOLESKY) ---")
-    # Let's pretend we have 2 tech stocks (AAPL and MSFT) that move together 80% of the time.
-    basket_spots = [150.0, 200.0]
-    basket_vols = [0.20, 0.25]
-    basket_rates = [0.05, 0.05]
+    # Let's test a basket of 5 prominent tech stocks
+    tickers = ["AAPL", "MSFT", "GOOGL", "AMZN", "NVDA"]
     
-    # Correlation Matrix (1.0 on the diagonal because a stock is 100% correlated with itself)
-    correlation_matrix = np.array([
-        [1.0, 0.8],
-        [0.8, 1.0]
-    ])
-    
-    multi_paths = engine.generate_correlated_paths(basket_spots, basket_rates, basket_vols, correlation_matrix, ttm=1.0)
-    print(f"Successfully generated {engine.sims} correlated universes for {len(basket_spots)} assets!")
-    
-    # Let's prove the math works by calculating the actual correlation of our simulated final prices!
-    final_prices_asset_A = multi_paths[0, :, -1]
-    final_prices_asset_B = multi_paths[1, :, -1]
-    empirical_corr = np.corrcoef(final_prices_asset_A, final_prices_asset_B)[0, 1]
-    print(f"Target Input Correlation:      0.8000")
-    print(f"Actual Simulated Correlation: {empirical_corr:.4f} (The Cholesky Math Works!)\n")
+    try:
+        basket_spots, basket_vols, corr, names = get_bulk_market_data(tickers)
+        rates = [0.05] * len(basket_spots) # Assume 5% risk-free for all
+        
+        # We'll use 10k simulations here to avoid running out of RAM with 5 assets
+        engine_bulk = MonteCarloEngine(simulations=10_000, steps=252)
+        
+        print("\nEntangling Assets via Cholesky Decomposition...")
+        multi_paths = engine_bulk.generate_correlated_paths(basket_spots, rates, basket_vols, corr, ttm=1.0)
+        
+        print(f"Successfully generated {engine_bulk.sims} correlated universes for {len(names)} assets!")
+        
+        # Verify Correlation between the first two assets
+        if len(names) >= 2:
+            empirical_corr = np.corrcoef(multi_paths[0, :, -1], multi_paths[1, :, -1])[0, 1]
+            print(f"Target Correlation ({names[0]}/{names[1]}): {corr[0, 1]:.4f}")
+            print(f"Actual Simulated Correlation:   {empirical_corr:.4f}")
+            
+    except Exception as e:
+        print(f"Error in Bulk Processing: {e}")
 
-    print("Rendering charts...")
+    print("\nRendering charts...")
     plot_paths(heston_paths, euro_option.strike, num_paths=100)
 
     print("\nStarting Live Dashboard...")
