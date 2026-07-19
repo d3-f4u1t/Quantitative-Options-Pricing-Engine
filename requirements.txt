@@ -2,3 +2,4 @@ numpy
 scipy
 matplotlib
 yfinance
+lxml html5lib
