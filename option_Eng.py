@@ -6,7 +6,7 @@ import matplotlib.pyplot as plt
 import yfinance as yf
 from matplotlib.animation import FuncAnimation
 
-# --- PHASE 3 UPDATED: BULK DATA HANDLER ---
+
 def get_bulk_market_data(ticker_list):
     """Downloads an entire basket of stocks at once and returns Matrices."""
     print(f"Fetching bulk data for {len(ticker_list)} tickers...")

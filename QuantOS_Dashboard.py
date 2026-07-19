@@ -10,6 +10,7 @@ import numpy as np
 import pandas as pd
 import yfinance as yf
 import plotly.graph_objects as go
+import time
 
 from option_Eng import MarketEnvironment, EuropeanCall, AsianCall, MonteCarloEngine, RiskManager, Portfolio
 
@@ -74,14 +75,20 @@ if mode == "Single Option Pricing":
                 col3.metric("Vega (Vol Exposure)", f"{greeks['Vega']:.4f}")
                 
                 # Plotly Interactive Chart
-                fig = go.Figure()
+                chart_placeholder = st.empty()
                 num_paths_to_plot = min(100, sims) # Only plot 100 so browser doesn't crash
-                for i in range(num_paths_to_plot):
-                    fig.add_trace(go.Scatter(y=paths[i, :], mode='lines', line=dict(width=1), opacity=0.3, showlegend=False))
+                y_min, y_max = np.min(paths[:num_paths_to_plot, :]), np.max(paths[:num_paths_to_plot, :])
+                chunk_size = max(1, steps // 20)
                 
-                fig.add_hline(y=strike, line_dash="dash", line_color="red", annotation_text="Strike Price")
-                fig.update_layout(title=f"Monte Carlo Universes ({num_paths_to_plot} plotted)", xaxis_title="Days", yaxis_title="Stock Price")
-                st.plotly_chart(fig, use_container_width=True)
+                for frame in range(chunk_size, steps + chunk_size, chunk_size):
+                    current_step = min(frame, steps)
+                    fig = go.Figure()
+                    for i in range(num_paths_to_plot):
+                        fig.add_trace(go.Scatter(x=np.arange(current_step + 1), y=paths[i, :current_step + 1], mode='lines', line=dict(width=1), opacity=0.3, showlegend=False))
+                    fig.add_hline(y=strike, line_dash="dash", line_color="red", annotation_text="Strike Price")
+                    fig.update_layout(title=f"Monte Carlo Universes ({num_paths_to_plot} plotted) - Day {current_step}/{steps}", xaxis_title="Days", yaxis_title="Stock Price", xaxis=dict(range=[0, steps]), yaxis=dict(range=[y_min, y_max]))
+                    chart_placeholder.plotly_chart(fig, use_container_width=True)
+                    time.sleep(0.05)
                 
     except Exception as e:
         st.error(f"Error fetching data or running engine: {e}")
@@ -120,13 +127,19 @@ elif mode == "Multi-Asset Portfolio Simulation":
                 col2.metric("Worst Case Value (VaR 95%)", f"${var_95:.2f}", f"${var_95 - initial_port_value:.2f} potential loss")
                 
                 # Plotly Chart of the PORTFOLIO value
-                fig = go.Figure()
+                chart_placeholder = st.empty()
                 num_paths_to_plot = min(100, sims)
-                for i in range(num_paths_to_plot):
-                    fig.add_trace(go.Scatter(y=portfolio_paths[i, :], mode='lines', line=dict(width=1), opacity=0.3, showlegend=False))
+                y_min, y_max = np.min(portfolio_paths[:num_paths_to_plot, :]), np.max(portfolio_paths[:num_paths_to_plot, :])
+                chunk_size = max(1, steps // 20)
                 
-                fig.update_layout(title="Correlated Portfolio Value Trajectories", xaxis_title="Days", yaxis_title="Total Portfolio Value ($)")
-                st.plotly_chart(fig, use_container_width=True)
+                for frame in range(chunk_size, steps + chunk_size, chunk_size):
+                    current_step = min(frame, steps)
+                    fig = go.Figure()
+                    for i in range(num_paths_to_plot):
+                        fig.add_trace(go.Scatter(x=np.arange(current_step + 1), y=portfolio_paths[i, :current_step + 1], mode='lines', line=dict(width=1), opacity=0.3, showlegend=False))
+                    fig.update_layout(title=f"Correlated Portfolio Value Trajectories - Day {current_step}/{steps}", xaxis_title="Days", yaxis_title="Total Portfolio Value ($)", xaxis=dict(range=[0, steps]), yaxis=dict(range=[y_min, y_max]))
+                    chart_placeholder.plotly_chart(fig, use_container_width=True)
+                    time.sleep(0.05)
 
     except Exception as e:
         st.error(f"Need at least 2 valid tickers for correlation. Error: {e}")
